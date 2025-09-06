@@ -1,4 +1,4 @@
-package com.haiyvee
+package com.haiyveelist
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule

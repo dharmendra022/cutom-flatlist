@@ -1,8 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, StatusBar, Image, requireNativeComponent } from 'react-native';
+// src/Home.tsx
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  StatusBar,
+  requireNativeComponent,
+  DeviceEventEmitter,
+  NativeSyntheticEvent,
+} from 'react-native';
 import axios from 'axios';
 
-type Row = { id: string; title: string; subtitle: string; image: string };
+type Row = {id: string; title: string; subtitle: string; image: string};
+
+type ItemPressEvent = NativeSyntheticEvent<{id: string}>;
+
 type NativeHaiyveeListProps = {
   data: Row[];
   refreshing: boolean;
@@ -11,7 +24,7 @@ type NativeHaiyveeListProps = {
   onEndReachedThreshold?: number;
   contentPaddingTop?: number;
   contentPaddingBottom?: number;
-  onItemPress?: (e: { nativeEvent: { id: string } }) => void;
+  onItemPress?: (e: ItemPressEvent) => void;
   style?: any;
 };
 
@@ -24,13 +37,13 @@ type ApiPost = {
   _id?: string;
   id?: string;
   text?: string;
-  owner?: { name?: string; avatar?: string };
-  urls?: { url?: string; thumbnailUrl?: string }[];
+  owner?: {name?: string; avatar?: string};
+  urls?: {url?: string; thumbnailUrl?: string}[];
 };
 type ApiResponse = {
   success?: boolean;
   posts?: ApiPost[];
-  pagination?: { total?: number; currentPage?: number; totalPages?: number };
+  pagination?: {total?: number; currentPage?: number; totalPages?: number};
 };
 
 const Home: React.FC = () => {
@@ -39,17 +52,17 @@ const Home: React.FC = () => {
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [offset, setOffset] = useState(0);
-  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const pendingRef = useRef(false);
 
-  const mapToRows = useCallback((posts: ApiPost[]): Row[] => {
+  const mapToRows = useCallback((posts: ApiPost[], baseOffset: number): Row[] => {
     return posts.map((p, idx) => {
       const image = p?.urls?.[0]?.thumbnailUrl || p?.urls?.[0]?.url || '';
       return {
-        id: p._id || p.id || `${Date.now()}-${idx}`,
-        title: p.owner?.name || 'Post',
-        subtitle: p.text || '',
+        id: p._id || p.id || image || `${baseOffset}-${idx}`,
+        title: p?.owner?.name || 'Post',
+        subtitle: p?.text || '',
         image,
       };
     });
@@ -57,6 +70,9 @@ const Home: React.FC = () => {
 
   const load = useCallback(
     async (reset = false) => {
+      if (pendingRef.current) return;
+      pendingRef.current = true;
+
       try {
         setError(null);
         if (reset) {
@@ -67,53 +83,58 @@ const Home: React.FC = () => {
           setLoadingMore(true);
         }
 
-        const res = await axios.get<ApiResponse>(API_URL, {
-          params: { offset: reset ? 0 : offset, limit: LIMIT, page: reset ? 1 : page },
-        });
-
-        const posts = Array.isArray(res.data?.posts) ? res.data!.posts! : [];
+        const nextOffset = reset ? 0 : offset;
+        const res = await axios.get<ApiResponse>(API_URL, {params: {offset: nextOffset, limit: LIMIT}});
+        const posts = Array.isArray(res.data?.posts) ? res.data.posts! : [];
         console.log("posts", posts);
         
-        const mapped = mapToRows(posts);
+        const mapped = mapToRows(posts, nextOffset);
 
         setRows(prev => (reset ? mapped : [...prev, ...mapped]));
 
-        const current = res.data?.pagination?.currentPage ?? (reset ? 1 : page);
-        const totalPages = res.data?.pagination?.totalPages ?? current;
-        const more = (current < totalPages && posts.length > 0) || posts.length === LIMIT;
-
-        setHasMore(more);
-        setOffset(prev => (reset ? LIMIT : prev + posts.length));
-        setPage(prev => (reset ? 2 : prev + 1));
+        const total = res.data?.pagination?.total;
+        if (typeof total === 'number') {
+          setHasMore(nextOffset + posts.length < total);
+        } else {
+          setHasMore(posts.length === LIMIT);
+        }
+        setOffset(reset ? LIMIT : nextOffset + posts.length);
       } catch (e: any) {
-        setError(e?.response?.data?.message || e?.message || 'Failed to load feed.');
-        console.log("e?.response?.data?.message", e?.response?.data?.message);
-        
+        setError(e?.response?.data?.message || e?.message || 'Failed to load feed');
       } finally {
         setRefreshing(false);
         setLoadingInitial(false);
         setLoadingMore(false);
+        pendingRef.current = false;
       }
     },
-    [offset, page, hasMore, loadingMore, mapToRows]
+    [offset, hasMore, loadingMore, mapToRows],
   );
 
   useEffect(() => {
     load(true);
-  }, []);
+  }, [load]);
+
+  // Optional: if you emit 'haiyvee_refresh' from MainActivity, it will reload:
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('haiyvee_refresh', () => {
+      load(true);
+    });
+    return () => sub.remove();
+  }, [load]);
 
   const overlay = useMemo(() => {
     if (loadingInitial) {
       return (
-        <View style={styles.centerOverlay}>
-          <ActivityIndicator />
+        <View style={styles.centerOverlay} pointerEvents="none">
+          <ActivityIndicator color="#fff" />
           <Text style={styles.hint}>Loading feed…</Text>
         </View>
       );
     }
     if (!loadingInitial && rows.length === 0) {
       return (
-        <View style={styles.centerOverlay}>
+        <View style={styles.centerOverlay} pointerEvents="none">
           <Text style={styles.hint}>{error ? error : 'No posts yet.'}</Text>
         </View>
       );
@@ -124,26 +145,25 @@ const Home: React.FC = () => {
   return (
     <View style={styles.screen}>
       <StatusBar barStyle="light-content" backgroundColor="#000" />
-
       <HaiyveeList
-        style={{ flex: 1 }}
+        style={{flex: 1}}
         data={rows}
         refreshing={refreshing}
         onRefresh={() => load(true)}
-        onEndReached={() => { if (!loadingMore && hasMore) load(false); }}
+        onEndReached={() => {
+          if (!loadingMore && hasMore) load(false);
+        }}
         onEndReachedThreshold={0.7}
         contentPaddingTop={12}
         contentPaddingBottom={120}
-        onItemPress={(e: any) => {
+        onItemPress={(e: ItemPressEvent) => {
           console.log('Pressed id:', e?.nativeEvent?.id);
         }}
       />
-
       {overlay}
-
       {loadingMore && (
         <View style={styles.footerLoader}>
-          <ActivityIndicator />
+          <ActivityIndicator color="#fff" />
         </View>
       )}
     </View>
@@ -153,10 +173,8 @@ const Home: React.FC = () => {
 export default Home;
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#000' },
-  centerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-  hint: { color: '#aaa', marginTop: 8, textAlign: 'center', paddingHorizontal: 16 },
-  footerLoader: { position: 'absolute', bottom: 16, left: 0, right: 0, alignItems: 'center' },
+  screen: {flex: 1, backgroundColor: '#000'},
+  centerOverlay: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center'},
+  hint: {color: '#aaa', marginTop: 8, textAlign: 'center', paddingHorizontal: 16},
+  footerLoader: {position: 'absolute', bottom: 16, left: 0, right: 0, alignItems: 'center'},
 });
-
-

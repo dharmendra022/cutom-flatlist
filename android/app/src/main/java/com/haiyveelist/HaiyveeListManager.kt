@@ -1,4 +1,4 @@
-package com.haiyvee
+package com.haiyveelist
 
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.common.MapBuilder
